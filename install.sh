@@ -23,7 +23,7 @@ SELF_URL=https://raw.githubusercontent.com/umairkhancis/fluent-engineer-labs-ins
 # What it is for: knowing which stage of this script people fall out of. An
 # install_started with no launched is a broken install, and the last event says
 # where. Set NO_TELEMETRY=1 or DO_NOT_TRACK=1 to send nothing.
-POSTHOG_KEY="${LAB_TELEMETRY_KEY:-}"
+POSTHOG_KEY="${LAB_TELEMETRY_KEY:-phc_kY5GZSrMWWbB8rtLLKkyFcXyfYSCkakfXueWx7vi576p}"
 POSTHOG_HOST="${LAB_TELEMETRY_HOST:-https://us.i.posthog.com}"
 
 # One id for the whole journey. Exported, so labui reports the lab funnel under
