@@ -16,6 +16,21 @@ set -euo pipefail
 
 SELF_URL=https://raw.githubusercontent.com/umairkhancis/fluent-engineer-labs-install/main/install.sh
 
+# Telemetry. Empty key = off, which is the default in a checkout; the published
+# copy carries the project key. PostHog project keys are write-only and meant to
+# ship in client code, so this is not a secret.
+#
+# What it is for: knowing which stage of this script people fall out of. An
+# install_started with no launched is a broken install, and the last event says
+# where. Set NO_TELEMETRY=1 or DO_NOT_TRACK=1 to send nothing.
+POSTHOG_KEY="${LAB_TELEMETRY_KEY:-}"
+POSTHOG_HOST="${LAB_TELEMETRY_HOST:-https://us.i.posthog.com}"
+
+# One id for the whole journey. Exported, so labui reports the lab funnel under
+# the same id and the two join into one funnel from curl to finished lab.
+LAB_SESSION="${LAB_SESSION:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s-$$)}"
+export LAB_SESSION
+
 REGISTRY="${REGISTRY:-ghcr.io/umairkhancis}"
 TAG="${TAG:-latest}"
 PREFIX="${PREFIX:-$HOME/.fluent-engineer}"
@@ -25,9 +40,31 @@ BINDIR=/usr/local/bin        # the `labui` wrapper and yq, both on PATH
 
 DEFAULT_LAB=linux-basics
 
-die()  { echo "install: $*" >&2; exit 1; }
+die()  { echo "install: $*" >&2; ping install_failed "$*"; exit 1; }
 note() { echo "==> $*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# ping <event> [detail] — fire and forget. Every failure mode is swallowed and
+# the timeout is short: telemetry must never stall or break someone's install,
+# so a blocked network or a typo'd host costs at most two seconds.
+ping() {
+  [ -n "$POSTHOG_KEY" ] || return 0
+  [ -z "${NO_TELEMETRY:-}" ] && [ -z "${DO_NOT_TRACK:-}" ] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  # Stamped here, not at receipt: these run in the background and land out of
+  # order, which would scramble a funnel ordered by arrival. Milliseconds
+  # because consecutive stages routinely fall in the same second.
+  # %3N is GNU-only and BSD date passes it through literally while still exiting
+  # 0, so the output has to be inspected rather than the exit code trusted.
+  local ts; ts=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null || true)
+  case "$ts" in ''|*N*) ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) ;; esac
+  ( curl -fsS -m 2 -o /dev/null -X POST "$POSTHOG_HOST/capture/" \
+      -H 'content-type: application/json' \
+      -d "{\"api_key\":\"$POSTHOG_KEY\",\"event\":\"$1\",\"distinct_id\":\"$LAB_SESSION\",\
+\"timestamp\":\"$ts\",\
+\"properties\":{\"lab\":\"${LAB:-}\",\"arch\":\"${ARCH:-}\",\"distro\":\"${ID:-}${VERSION_ID:+ $VERSION_ID}\",\
+\"detail\":\"${2:-}\",\"\$lib\":\"labs-installer\"}}" >/dev/null 2>&1 || true ) &
+}
 
 usage() {
   cat <<EOF
@@ -71,6 +108,10 @@ elif have sudo; then
 else
   die "sudo is required (or run as root)"
 fi
+
+# Funnel stage 1. Emitted after the preflight so that arch and distro are known
+# and every later event can be grouped by them.
+ping install_started
 
 # multipass defaults to 1 CPU / 1 GB / 5 GB, which cannot run a lab that hosts
 # its own Docker daemon. Warn rather than refuse: the plain labs are far lighter.
@@ -131,6 +172,8 @@ dk() { if [ -w /var/run/docker.sock ]; then docker "$@"; else $SUDO docker "$@";
 
 dk info >/dev/null 2>&1 || die "docker is installed but not responding (try: $SUDO systemctl start docker)"
 
+ping deps_ready
+
 # ---------------------------------------------------------------------------
 # payload — labctl, every lab.yaml, the catalog, and the labui binary
 # ---------------------------------------------------------------------------
@@ -159,6 +202,8 @@ esac
 exec "$LIBDIR/labui" "\$@" --root "$ROOT"
 EOF
 $SUDO chmod +x "$BINDIR/labui"
+
+ping payload_ready
 
 # ---------------------------------------------------------------------------
 # the lab itself
@@ -193,10 +238,12 @@ if [ "$runtime" = sysbox-runc ]; then
     dk info --format '{{range $k,$v := .Runtimes}}{{$k}}{{"\n"}}{{end}}' | grep -qx sysbox-runc \
       || die "sysbox installed but docker does not list sysbox-runc — check: systemctl status sysbox"
   fi
+  ping sysbox_ready
 fi
 
 note "pulling $image"
 dk pull -q "$image" >/dev/null
+ping image_ready
 
 # ---------------------------------------------------------------------------
 # launch
@@ -207,7 +254,17 @@ note "starting $LAB — press q to quit, and re-run this command any time"
 # --prebuilt tells labui there is no source tree here: do not try to build the
 # image or rebuild the catalog. LABCTL_PULL makes labctl run the published image
 # rather than the local :dev tag `labctl build` would have produced.
-launch="LABCTL_PULL=1 REGISTRY=$(printf %q "$REGISTRY") TAG=$(printf %q "$TAG") $BINDIR/labui $(printf %q "$LAB") --prebuilt"
+ping launched
+
+# LAB_SESSION is already exported; passing the key and host through means labui
+# reports the lab funnel to the same project under the same session id.
+launch="LABCTL_PULL=1 REGISTRY=$(printf %q "$REGISTRY") TAG=$(printf %q "$TAG")"
+launch="$launch LAB_SESSION=$(printf %q "$LAB_SESSION")"
+if [ -n "$POSTHOG_KEY" ] && [ -z "${NO_TELEMETRY:-}" ] && [ -z "${DO_NOT_TRACK:-}" ]; then
+  launch="$launch LAB_TELEMETRY_KEY=$(printf %q "$POSTHOG_KEY")"
+  launch="$launch LAB_TELEMETRY_HOST=$(printf %q "$POSTHOG_HOST")"
+fi
+launch="$launch $BINDIR/labui $(printf %q "$LAB") --prebuilt"
 
 # Do NOT redirect from /dev/tty here. tmux calls ttyname() on its stdin and
 # refuses outright when the answer is the literal string "/dev/tty" rather than
