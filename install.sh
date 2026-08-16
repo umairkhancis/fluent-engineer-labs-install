@@ -8,10 +8,13 @@
 # lab images and the small payload labui reads (labctl, lab.yaml, catalog.json,
 # the labui binary) all come from the public registry.
 #
-# Use `bash <(curl ...)` rather than `curl ... | bash`. Under a pipe the script
-# is read from stdin, and while the final exec reopens /dev/tty for the TUI, the
-# form above keeps stdin a terminal throughout and is easier to reason about.
+# Use `bash <(curl ...)` rather than `curl ... | bash`: the lab UI is a terminal
+# app, and the process-substitution form leaves stdin attached to the terminal
+# instead of to the pipe carrying this script. The pipe form is handled too (see
+# the launch section) but the form above is the one to document.
 set -euo pipefail
+
+SELF_URL=https://raw.githubusercontent.com/umairkhancis/fluent-engineer-labs-install/main/install.sh
 
 REGISTRY="${REGISTRY:-ghcr.io/umairkhancis}"
 TAG="${TAG:-latest}"
@@ -206,10 +209,25 @@ note "starting $LAB — press q to quit, and re-run this command any time"
 # rather than the local :dev tag `labctl build` would have produced.
 launch="LABCTL_PULL=1 REGISTRY=$(printf %q "$REGISTRY") TAG=$(printf %q "$TAG") $BINDIR/labui $(printf %q "$LAB") --prebuilt"
 
+# Do NOT redirect from /dev/tty here. tmux calls ttyname() on its stdin and
+# refuses outright when the answer is the literal string "/dev/tty" rather than
+# the real /dev/pts/N behind it — "open terminal failed: can't use /dev/tty".
+#
+# With the documented `bash <(curl ...)` form stdin is already that pts, so
+# there is nothing to fix. Under `curl | bash` stdin is the pipe feeding this
+# script; borrow stdout's terminal instead, which does name a real pts.
+if [ ! -t 0 ]; then
+  if [ -t 1 ]; then
+    exec 0<&1
+  else
+    die "no terminal to draw the lab on — run: bash <(curl -fsSL $SELF_URL) $LAB"
+  fi
+fi
+
 if id -nG | tr ' ' '\n' | grep -qx docker; then
-  exec /bin/sh -c "$launch" </dev/tty
+  exec /bin/sh -c "$launch"
 else
   # First run: the docker group exists but this session predates it. sg starts a
   # shell that has it, so the student does not have to log out and back in.
-  exec sg docker -c "$launch" </dev/tty
+  exec sg docker -c "$launch"
 fi
