@@ -61,6 +61,29 @@ rm -rf ~/.fluent-engineer && sudo rm -f /usr/local/bin/labui
 | `tab` | jump to the lab shell |
 | `q` | remove the container and exit |
 
+## What it reports back
+
+This is v0.1 and I need to know whether it works on machines that aren't mine,
+so the installer and the lab app send anonymous progress events: which stage of
+the install you reached, and — inside a lab — which step you're on, whether a
+check passed, and whether you finished.
+
+There is **no identity in any of it**. Each run makes a fresh random id that
+links its own events together and nothing else. No account, no email, no IP
+stored, nothing read off your machine beyond CPU architecture and distro name.
+
+The point is finding where it breaks: if ten people fail the same step, that
+step's instructions are wrong, and this is the only way I'd know.
+
+To send nothing at all:
+
+```bash
+NO_TELEMETRY=1 bash <(curl -fsSL .../install.sh) linux-basics
+```
+
+`DO_NOT_TRACK=1` works too, and both are honoured by the lab app as well as the
+installer. Everything still works with them set.
+
 ---
 
 `install.sh` here is a published copy; it is maintained in the labs repository
